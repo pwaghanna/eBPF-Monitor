@@ -9,6 +9,7 @@ from datetime import datetime
 import socket
 import struct
 import os
+import time
 
 program="""
 #include <uapi/linux/ptrace.h>
@@ -272,6 +273,26 @@ class SystemMonitor:
             'connect':0,
             'suspicious':0
         }
+        self.start_time=time.time()
+        self.total_events=0
+
+        self.rule_hit={
+            'suspicious_paths':0,
+            'suspicious_processes':0,
+            'sensitive_ports':0,
+            'directory_traversal':0
+        }
+
+        self.lost_events=0
+
+    def handle_lost_events(self, count):
+        """
+        Callback function to handle lost events.
+        
+        Parameters:
+            count (int): Number of lost events.
+        """
+        self.lost_events+=count
     
     def is_suspicious(self, event_type, comm, filename, port):
         """
@@ -296,21 +317,25 @@ class SystemMonitor:
             if event_type in [2, 3, 4]:
                 for path in SUSPICIOUS_PATHS:
                     if filename_str.startswith(path):
+                        self.rule_hit['suspicious_paths']+=1
                         return True
 
             # Check for directory traversal patterns
             if '/..' in filename_str or filename_str.startswith('/.'):
+                self.rule_hit['directory_traversal']+=1
                 return True
 
         # Check for suspicious processes
         comm_str=comm.decode('utf-8', 'replace')
 
         if comm_str in SUSPICIOUS_PROCESSES:
+            self.rule_hit['suspicious_processes']+=1
             return True
 
         # Check for sensitive ports
 
         if event_type==5 and port in SENSITIVE_PORTS:
+            self.rule_hit['sensitive_ports']+=1
             return True
         
         return False
@@ -426,6 +451,7 @@ class SystemMonitor:
         }
 
         self.stats[event_type_stats.get(event.event_type, 'unknown')]+=1
+        self.total_events+=1
 
         output, suspicious=self.format_event(event)
 
@@ -440,6 +466,10 @@ class SystemMonitor:
         """
         Print the collected statistics.
         """
+        duration=time.time()-self.start_time
+        eps=self.total_events/duration if duration>0 else 0
+
+        sus_ratio=(self.stats['suspicious']/self.total_events*100) if self.total_events>0 else 0
 
         print(f"\n{Colours.BOLD}=== Monitoring Statistics ==={Colours.RESET}")
         print(f"Total EXEC events   : {self.stats['exec']}")
@@ -448,6 +478,20 @@ class SystemMonitor:
         print(f"Total DELETE events : {self.stats['delete']}")
         print(f"Total CONNECT events: {self.stats['connect']}")
         print(f"Suspicious events   : {self.stats['suspicious']}")
+        print(f"Suspicious ratio    : {sus_ratio:.2f}% \n")
+
+        print(f"Total events        : {self.total_events}")
+        print(f"Duration            : {duration:.2f} seconds")
+        print(f"Events per second   : {eps:.2f} eps \n")
+
+        print(f"Lost events         : {self.lost_events}\n")
+
+        print(f"\n{Colours.BOLD}=== Suspicious Activity Details ==={Colours.RESET}")
+        print(f"Suspicious paths detected       : {self.rule_hit['suspicious_paths']}")
+        print(f"Suspicious processes detected    : {self.rule_hit['suspicious_processes']}")
+        print(f"Sensitive ports accessed        : {self.rule_hit['sensitive_ports']}")
+        print(f"Directory traversal attempts    : {self.rule_hit['directory_traversal']}")
+
         print(f"{Colours.BOLD}============================={Colours.RESET}\n")
 
     
@@ -472,11 +516,12 @@ class SystemMonitor:
         self.bpf.attach_kprobe(event=self.bpf.get_syscall_fnname("unlinkat"), fn_name="syscall__unlinkat")
         self.bpf.attach_kprobe(event=self.bpf.get_syscall_fnname("connect"), fn_name="syscall__connect")
 
-        self.bpf["events"].open_perf_buffer(self.print_event)
+        # self.bpf["events"].open_perf_buffer(self.print_event)
+        self.bpf["events"].open_perf_buffer(self.print_event, lost_cb=self.handle_lost_events)
 
         try:
             while True:
-                self.bpf.perf_buffer_poll()
+                self.bpf.perf_buffer_poll(timeout=500)
         except KeyboardInterrupt:
             print(f"\n{Colours.BOLD}{Colours.RED}Stopping System Monitor...{Colours.RESET}")
             self.print_stats()

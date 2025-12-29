@@ -38,7 +38,7 @@ echo
 echo "[4/5] Testing network connections (connect)"
 echo "Testing connection google dns"
 sleep 1
-timeout 2 nc -zv 8.8.8.8 53 2>/dev/null || true
+timeout 2 nc -zv  53 2>/dev/null || true
 timeout 2 curl -s https://example.com > /dev/null || true
 
 echo
@@ -55,6 +55,7 @@ touch /tmp/.hidden_file.txt
 rm /tmp/.hidden_file.txt
 
 timeout 1 nc -zv localhost 4444 2>/dev/null || echo "port not open but its ok"
+timeout 1 curl -s https://64.13.134.52:4444 > /dev/null || echo "ip connect failed but its ok"
 
 
 echo
